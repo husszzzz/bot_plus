@@ -6,112 +6,97 @@ from flask import Flask, request
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-# تحميل المتغيرات من ملف .env
 load_dotenv()
 
-# جلب المعلومات الأساسية
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_KEY = os.getenv('API_KEY')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 API_URL = "https://kd1s.com/api/v2"
 
-# تهيئة الاتصال بقاعدة البيانات (Supabase)
 supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_KEY'))
-
-# تهيئة البوت وتطبيق فلاسك للويب هوك
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# --- دالة لجلب تفاصيل الخدمة من موقع الرشق ---
-def fetch_service_from_api(service_id):
-    payload = {"key": API_KEY, "action": "services"}
-    try:
-        response = requests.post(API_URL, json=payload).json()
-        for service in response:
-            if str(service.get('service')) == str(service_id):
-                return service
-    except Exception as e:
-        print("API Error:", e)
-    return None
+# --- الرموز المتحركة ---
+E_ROCKET = '<tg-emoji emoji-id="5861568308116984245">🚀</tg-emoji>'
+E_CHECK  = '<tg-emoji emoji-id="5197512496675571164">✅</tg-emoji>'
+E_STAR   = '<tg-emoji emoji-id="5307699753805451797">🤩</tg-emoji>'
+E_FIRE   = '<tg-emoji emoji-id="5210862586471424132">🔥</tg-emoji>'
+E_CART   = '<tg-emoji emoji-id="5334961908392954329">🛒</tg-emoji>'
+E_USER   = '<tg-emoji emoji-id="5443036372325656561">👤</tg-emoji>'
 
-# --- رسالة الترحيب ---
+# --- كلاس الأزرار الملونة الشفافة ---
+class ColoredButton(InlineKeyboardButton):
+    def __init__(self, text, style=None, icon_custom_emoji_id=None, **kwargs):
+        super().__init__(text, **kwargs)
+        self.style = style
+        self.icon_custom_emoji_id = icon_custom_emoji_id
+        
+    def to_dict(self):
+        d = super().to_dict()
+        if self.style: d['style'] = self.style
+        if self.icon_custom_emoji_id: d['icon_custom_emoji_id'] = self.icon_custom_emoji_id
+        return d
+
+# --- واجهة المستخدم (الزبون) ---
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    bot.reply_to(message, "أهلاً بيك في بوت خدمات الرشق! 🚀\nالبوت شغال وجاهز لاستقبال الطلبات.")
+    chat_id = message.chat.id
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        ColoredButton(text="طلب جديد", callback_data="new_order", style="success", icon_custom_emoji_id="4972415571384599106"),
+        ColoredButton(text="حسابي", callback_data="my_account", style="primary", icon_custom_emoji_id="5443036372325656561")
+    )
+    markup.add(
+        ColoredButton(text="طلباتي", callback_data="my_orders", style="primary", icon_custom_emoji_id="5334961908392954329"),
+        ColoredButton(text="الدعم الفني", url="https://t.me/hassanyIPA", style="default") # رابط قناتك او حسابك
+    )
+    
+    if chat_id == ADMIN_ID:
+        markup.add(ColoredButton(text="لوحة التحكم (الأدمن) ⚙️", callback_data="admin_panel", style="danger"))
 
-# --- قسم الأدمن: إضافة خدمة جديدة ---
-@bot.message_handler(commands=['add'])
-def add_service_step1(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    msg = bot.reply_to(message, "دزلي رقم الخدمة (الـ ID) من الموقع:")
-    bot.register_next_step_handler(msg, add_service_step2)
+    welcome_text = f"مرحباً بك في بوت خدمات الرشق! {E_STAR}{E_FIRE}\n\nيمكنك من خلال البوت اختيار الخدمات التي تريدها بكل سهولة وتتبع طلباتك لحظة بلحظة.\n\nاختر من القائمة أدناه:"
+    bot.send_message(chat_id, welcome_text, reply_markup=markup, parse_mode="HTML")
 
-def add_service_step2(message):
-    service_id = message.text.strip()
-    bot.reply_to(message, "جاري البحث عن الخدمة بالموقع... ⏳")
+# --- واجهة الأدمن (لوحة التحكم) ---
+def admin_panel_ui(chat_id, message_id):
+    markup = InlineKeyboardMarkup(row_width=2)
     
-    service_data = fetch_service_from_api(service_id)
+    markup.add(
+        ColoredButton(text="إضافة تطبيق (قسم)", callback_data="add_category", style="success"),
+        ColoredButton(text="إضافة خدمة", callback_data="add_service", style="success")
+    )
+    markup.add(
+        ColoredButton(text="المشتركون والإحصائيات", callback_data="users_stats", style="primary"),
+        ColoredButton(text="شحن رصيد لمستخدم", callback_data="add_balance", style="primary")
+    )
+    markup.add(ColoredButton(text="رجوع", callback_data="home", style="danger"))
     
-    if not service_data:
-        bot.reply_to(message, "❌ الخدمة مموجودة أو اكو مشكلة بالـ API.")
-        return
-    
-    # حفظ البيانات مؤقتاً
-    temp_data = {
-        "api_id": service_id,
-        "original_name": service_data['name'],
-        "original_rate": service_data['rate']
-    }
-    
-    msg = bot.reply_to(message, f"✅ لگيت الخدمة!\n\n📌 اسمها: {temp_data['original_name']}\n💰 سعرها بالموقع: {temp_data['original_rate']}$\n\nدزلي السعر اللي تريد تبيع بي بالبوت:")
-    bot.register_next_step_handler(msg, add_service_step3, temp_data)
+    bot.edit_message_text("<b>لوحة التحكم الخاصة بالمدير</b> 👑\n\nاختر الإجراء المطلوب:", chat_id, message_id, reply_markup=markup, parse_mode="HTML")
 
-def add_service_step3(message, temp_data):
-    try:
-        bot_price = float(message.text.strip())
-        temp_data['bot_price'] = bot_price
+# --- التحكم بالاستجابات (Callbacks) ---
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    mid = call.message.message_id
+    data = call.data
+    
+    if data == "home":
+        bot.delete_message(chat_id, mid)
+        start_message(call.message)
+    
+    elif data == "admin_panel" and chat_id == ADMIN_ID:
+        admin_panel_ui(chat_id, mid)
         
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("انستغرام 📸", callback_data=f"cat_instagram_{temp_data['api_id']}_{bot_price}"),
-            InlineKeyboardButton("تيك توك 🎵", callback_data=f"cat_tiktok_{temp_data['api_id']}_{bot_price}")
-        )
-        bot.reply_to(message, "حلو! هسه اختار القسم الخاص بهاي الخدمة:", reply_markup=markup)
+    elif data == "my_account":
+        # سيتم برمجتها بعد تحديث قاعدة البيانات
+        bot.answer_callback_query(call.id, "قريباً: عرض الرصيد والطلبات!")
         
-    except ValueError:
-        bot.reply_to(message, "❌ السعر لازم يكون رقم! عيد الأمر من البداية بكتابة /add.")
+    else:
+        bot.answer_callback_query(call.id, "جاري العمل على هذا القسم ⏳")
 
-# --- حفظ الخدمة بقاعدة البيانات ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('cat_'))
-def save_service_to_db(call):
-    if call.from_user.id != ADMIN_ID:
-        return
-        
-    data_parts = call.data.split('_')
-    category = data_parts[1]
-    api_id = int(data_parts[2])
-    bot_price = float(data_parts[3])
-    
-    service_data = fetch_service_from_api(api_id)
-    
-    db_data = {
-        "api_service_id": api_id,
-        "name": service_data['name'],
-        "bot_price": bot_price,
-        "category": category
-    }
-    
-    try:
-        # الإرسال إلى جدول services في Supabase
-        supabase.table("services").insert(db_data).execute()
-        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, 
-                              text=f"✅ تمت إضافة الخدمة بنجاح لقسم {category} بسعر {bot_price}$")
-    except Exception as e:
-        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, 
-                              text=f"❌ صار خطأ بالحفظ بقاعدة البيانات، تأكد من إعدادات الجدول: {e}")
-
-# --- إعدادات الويب هوك (Webhook) للاستضافة ---
+# --- الويب هوك للاستضافة ---
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -123,8 +108,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Hassany Bot is Running! 🚀"
+    return "Hassany Bot V2 is Running! 🚀"
 
 if __name__ == '__main__':
-    # لتشغيل السيرفر على الاستضافة
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 5000)))
