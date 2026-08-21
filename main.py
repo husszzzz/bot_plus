@@ -120,7 +120,6 @@ def callback_query(call):
     mid = call.message.message_id
     data = call.data
 
-    # إيقاف التحميل فوراً في التيليغرام
     bot.answer_callback_query(call.id)
     
     # 🏠 الرئيسية
@@ -154,10 +153,13 @@ def callback_query(call):
             
             msg = f"{E_CART} <b>أحدث طلباتك:</b>\n\n"
             for o in res.data:
-                msg += f"🔹 خدمة: {o.get('service_name', 'خدمة')}\n💵 السعر: {o.get('price', 0)}$\n🔗 الرابط: {o.get('target_link', '-')}\n📌 الحالة: {o.get('status', 'مكتمل')}\n〰️〰️〰️〰️\n"
+                msg += f"🔹 خدمة: {o.get('service_name', 'خدمة')}\n💵 المبلغ المخصوم: {o.get('price', 0)}$\n🔗 الرابط: {o.get('target_link', '-')}\n📌 الحالة: {o.get('status', 'مكتمل')}\n〰️〰️〰️〰️\n"
             bot.edit_message_text(msg, chat_id, mid, reply_markup=markup, parse_mode="HTML")
         except Exception as e:
-            bot.edit_message_text("لا توجد طلبات سابقة بحسابك. ❌", chat_id, mid, reply_markup=markup)
+            err_msg = f"لا توجد طلبات سابقة بحسابك. ❌"
+            if chat_id == ADMIN_ID:
+                err_msg += f"\n\n(تنبيه للمطور: يوجد خطأ بجدول orders يرجى مراجعته:\n{e})"
+            bot.edit_message_text(err_msg, chat_id, mid, reply_markup=markup)
 
     # 🚀 قسم طلب جديد (عرض الأقسام)
     elif data == "new_order":
@@ -192,8 +194,6 @@ def callback_query(call):
             return
         
         service = res.data[0]
-        # تم إزالة فحص الرصيد من هنا لأننا نحتاج نضرب السعر بالكمية أولاً
-            
         msg = bot.edit_message_text(f"الخدمة: <b>{service['name']}</b>\nالسعر لكل 1000: <b>{service['bot_price']}$</b>\n\nأرسل الآن الرابط المراد الرشق له:", chat_id, mid, parse_mode="HTML")
         bot.register_next_step_handler(msg, process_order_link, service)
 
@@ -222,7 +222,15 @@ def callback_query(call):
         markup = InlineKeyboardMarkup().add(ColoredButton(text="رجوع", callback_data="admin_panel", style="danger"))
         bot.edit_message_text(f"📊 <b>إحصائيات البوت:</b>\n\n👥 عدد المستخدمين: {u_count}\n🛒 إجمالي الطلبات: {o_count}", chat_id, mid, reply_markup=markup, parse_mode="HTML")
 
-    # 📥 تأكيد حفظ الخدمة للأدمن
+    # 🛠️ أزرار تعديل اسم الخدمة للأدمن
+    elif data == "change_svc_name" and chat_id == ADMIN_ID:
+        msg = bot.edit_message_text("أرسل الاسم الجديد للخدمة:", chat_id, mid)
+        bot.register_next_step_handler(msg, add_service_step3_name)
+
+    elif data == "keep_svc_name" and chat_id == ADMIN_ID:
+        show_categories_for_service(chat_id, mid)
+
+    # 📥 تأكيد حفظ الخدمة للأدمن في القسم
     elif data.startswith("setcat_") and chat_id == ADMIN_ID:
         cat_id = int(data.split("setcat_")[1])
         c_res = supabase.table("categories").select("name").eq("id", cat_id).execute()
@@ -241,12 +249,10 @@ def callback_query(call):
             bot.edit_message_text(f"✅ تمت إضافة الخدمة بنجاح لقسم <b>{cat_name}</b> بسعر {svc['bot_price']}$", chat_id, mid, reply_markup=markup, parse_mode="HTML")
             del temp_admin_data[chat_id]
 
-
 # --- دوال عملية الشراء مع الكمية ---
 def process_order_link(message, service):
     chat_id = message.chat.id
     target_link = message.text.strip()
-    
     msg = bot.send_message(chat_id, "أرسل الآن الكمية المطلوبة (أرقام فقط، مثلاً: 1000 أو 5000):")
     bot.register_next_step_handler(msg, process_order_execute, service, target_link)
 
@@ -286,26 +292,30 @@ def process_order_execute(message, service, target_link):
             return
             
         update_balance(chat_id, total_price, add=False)
-        supabase.table("orders").insert({
-            "user_id": chat_id,
-            "service_name": service['name'],
-            "price": total_price,
-            "target_link": target_link,
-            "status": "مكتمل"
-        }).execute()
+        
+        try:
+            supabase.table("orders").insert({
+                "user_id": chat_id,
+                "service_name": service['name'],
+                "price": total_price,
+                "target_link": target_link,
+                "status": "مكتمل"
+            }).execute()
+        except Exception as db_err:
+            bot.send_message(ADMIN_ID, f"⚠️ تنبيه للأدمن: صار خطأ بحفظ الطلب بجدول orders:\n{db_err}")
         
         markup = InlineKeyboardMarkup().add(ColoredButton(text="القائمة الرئيسية", callback_data="home", style="primary"))
         success_msg = (
             f"{E_CHECK} <b>تم استلام طلبك وتنفذ بنجاح!</b>\n\n"
-            f"🔹 الخدمة: {service['name']}\n"
-            f"📈 الكمية: {quantity}\n"
-            f"💵 السعر المخصوم: {total_price}$\n\n"
+            f"🔹 الخدمة: <b>{service['name']}</b>\n"
+            f"💰 سعر الـ 1000 بالبوت: {service['bot_price']}$\n"
+            f"📈 الكمية المطلوبة: {quantity}\n"
+            f"💵 المبلغ المخصوم منك: <b>{total_price}$</b>\n\n"
             f"يمكنك متابعة الحالة من قسم 'طلباتي'."
         )
         bot.edit_message_text(success_msg, chat_id, status_msg.message_id, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         bot.edit_message_text(f"❌ حدث خطأ أثناء الاتصال: {e}", chat_id, status_msg.message_id)
-
 
 # --- دوال إضافة الأقسام والخدمات للأدمن ---
 def add_category_step(message):
@@ -324,11 +334,11 @@ def add_service_step1(message):
         
     temp_admin_data[message.chat.id] = {
         "api_id": service_id,
-        "name": service_data['name'],
-        "rate": service_data['rate']
+        "name": service_data['name']
     }
     
-    msg = bot.send_message(message.chat.id, f"✅ الخدمة: <b>{service_data['name']}</b>\n💰 سعرها بالموقع: {service_data['rate']}$\n\nدزلي السعر اللي تريد تبيع بي بالبوت:", parse_mode="HTML")
+    # تم إخفاء سعر الموقع الحقيقي من الرسالة
+    msg = bot.send_message(message.chat.id, f"✅ الخدمة: <b>{service_data['name']}</b>\n\nدزلي السعر اللي تريد تبيع بي بالبوت (لكل 1000):", parse_mode="HTML")
     bot.register_next_step_handler(msg, add_service_step2)
 
 def add_service_step2(message):
@@ -336,14 +346,35 @@ def add_service_step2(message):
         bot_price = float(message.text.strip())
         temp_admin_data[message.chat.id]['bot_price'] = bot_price
         
-        res = supabase.table("categories").select("*").execute()
         markup = InlineKeyboardMarkup(row_width=2)
-        if res.data:
-            for cat in res.data:
-                markup.add(ColoredButton(text=cat['name'], callback_data=f"setcat_{cat['id']}", style="primary"))
-        bot.send_message(message.chat.id, "اختر القسم اللي تريد تضيف الخدمة بي:", reply_markup=markup)
+        markup.add(
+            ColoredButton(text="تغيير الاسم ✏️", callback_data="change_svc_name", style="primary"),
+            ColoredButton(text="إبقاء الاسم ♻️", callback_data="keep_svc_name", style="success")
+        )
+        bot.send_message(message.chat.id, "هل ترغب في تغيير اسم الخدمة الذي سيظهر للزبائن؟", reply_markup=markup)
     except:
         bot.send_message(message.chat.id, "❌ السعر لازم يكون رقم فقط! أعد المحاولة من لوحة التحكم.")
+
+def add_service_step3_name(message):
+    new_name = message.text.strip()
+    if message.chat.id in temp_admin_data:
+        temp_admin_data[message.chat.id]['name'] = new_name
+    
+    bot.send_message(message.chat.id, "✅ تم تحديث الاسم.")
+    show_categories_for_service(message.chat.id, None)
+
+def show_categories_for_service(chat_id, message_id=None):
+    res = supabase.table("categories").select("*").execute()
+    markup = InlineKeyboardMarkup(row_width=2)
+    if res.data:
+        for cat in res.data:
+            markup.add(ColoredButton(text=cat['name'], callback_data=f"setcat_{cat['id']}", style="primary"))
+            
+    text = "اختر القسم اللي تريد تضيف الخدمة بي:"
+    if message_id:
+        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup)
 
 def add_balance_step1(message):
     try:
