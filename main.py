@@ -129,11 +129,11 @@ def callback_query(call):
         except: pass
         start_message(call.message)
         
-    # 👤 قسم حسابي
+    # 👤 قسم حسابي (تم التعديل لتفادي خطأ عمود id)
     elif data == "my_account":
         bal = get_balance(chat_id)
         try:
-            orders = supabase.table("orders").select("id", count="exact").eq("user_id", chat_id).execute()
+            orders = supabase.table("orders").select("*", count="exact").eq("user_id", chat_id).execute()
             count = orders.count if orders.count is not None else len(orders.data)
         except:
             count = 0
@@ -142,17 +142,21 @@ def callback_query(call):
         msg = f"{E_USER} <b>معلومات حسابك:</b>\n\n🆔 الأيدي: <code>{chat_id}</code>\n💰 الرصيد الحالي: <b>{bal}$</b>\n🛒 عدد الطلبات: <b>{count}</b>"
         bot.edit_message_text(msg, chat_id, mid, reply_markup=markup, parse_mode="HTML")
         
-    # 🛒 قسم طلباتي
+    # 🛒 قسم طلباتي (تم التعديل الجذري لتفادي خطأ عمود id)
     elif data == "my_orders":
         markup = InlineKeyboardMarkup().add(ColoredButton(text="رجوع", callback_data="home", style="danger"))
         try:
-            res = supabase.table("orders").select("*").eq("user_id", chat_id).order("id", desc=True).limit(5).execute()
+            # نسحب كل طلبات اليوزر بدون ما نرتبها من قاعدة البيانات
+            res = supabase.table("orders").select("*").eq("user_id", chat_id).execute()
             if not res.data:
                 bot.edit_message_text("لا توجد طلبات سابقة بحسابك. ❌", chat_id, mid, reply_markup=markup)
                 return
             
+            # ترتيب الطلبات برمجياً (الأحدث أولاً) وتحديد آخر 5 فقط
+            orders_list = res.data[::-1][:5]
+            
             msg = f"{E_CART} <b>أحدث طلباتك:</b>\n\n"
-            for o in res.data:
+            for o in orders_list:
                 msg += f"🔹 خدمة: {o.get('service_name', 'خدمة')}\n💵 المبلغ المخصوم: {o.get('price', 0)}$\n🔗 الرابط: {o.get('target_link', '-')}\n📌 الحالة: {o.get('status', 'مكتمل')}\n〰️〰️〰️〰️\n"
             bot.edit_message_text(msg, chat_id, mid, reply_markup=markup, parse_mode="HTML")
         except Exception as e:
@@ -185,7 +189,7 @@ def callback_query(call):
         markup.add(ColoredButton(text="رجوع", callback_data="new_order", style="danger"))
         bot.edit_message_text(f"الخدمات المتاحة لقسم <b>{cat_name}</b>:\nاختر الخدمة المطلوبة:", chat_id, mid, reply_markup=markup, parse_mode="HTML")
 
-    # 💸 بدء الشراء (محدث لطلب الكمية)
+    # 💸 بدء الشراء
     elif data.startswith("buy_"):
         service_id = int(data.split("buy_")[1])
         res = supabase.table("services").select("*").eq("id", service_id).execute()
@@ -213,9 +217,10 @@ def callback_query(call):
         msg = bot.edit_message_text("أرسل أيدي (ID) المستخدم المراد شحنه:", chat_id, mid)
         bot.register_next_step_handler(msg, add_balance_step1)
 
+    # 📊 الإحصائيات (تم التعديل لتفادي خطأ عمود id)
     elif data == "admin_stats" and chat_id == ADMIN_ID:
-        u_res = supabase.table("users").select("user_id", count="exact").execute()
-        o_res = supabase.table("orders").select("id", count="exact").execute()
+        u_res = supabase.table("users").select("*", count="exact").execute()
+        o_res = supabase.table("orders").select("*", count="exact").execute()
         u_count = u_res.count if u_res.count is not None else len(u_res.data)
         o_count = o_res.count if o_res.count is not None else len(o_res.data)
         
@@ -337,7 +342,6 @@ def add_service_step1(message):
         "name": service_data['name']
     }
     
-    # تم إخفاء سعر الموقع الحقيقي من الرسالة
     msg = bot.send_message(message.chat.id, f"✅ الخدمة: <b>{service_data['name']}</b>\n\nدزلي السعر اللي تريد تبيع بي بالبوت (لكل 1000):", parse_mode="HTML")
     bot.register_next_step_handler(msg, add_service_step2)
 
