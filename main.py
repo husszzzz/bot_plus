@@ -129,7 +129,7 @@ def callback_query(call):
         except: pass
         start_message(call.message)
         
-    # 👤 قسم حسابي (تم التعديل لتفادي خطأ عمود id)
+    # 👤 قسم حسابي
     elif data == "my_account":
         bal = get_balance(chat_id)
         try:
@@ -142,27 +142,50 @@ def callback_query(call):
         msg = f"{E_USER} <b>معلومات حسابك:</b>\n\n🆔 الأيدي: <code>{chat_id}</code>\n💰 الرصيد الحالي: <b>{bal}$</b>\n🛒 عدد الطلبات: <b>{count}</b>"
         bot.edit_message_text(msg, chat_id, mid, reply_markup=markup, parse_mode="HTML")
         
-    # 🛒 قسم طلباتي (تم التعديل الجذري لتفادي خطأ عمود id)
+    # 🛒 قسم طلباتي (محدث للفحص اللايف من الموقع)
     elif data == "my_orders":
-        markup = InlineKeyboardMarkup().add(ColoredButton(text="رجوع", callback_data="home", style="danger"))
+        markup = InlineKeyboardMarkup().add(ColoredButton(text="تحديث 🔄", callback_data="my_orders", style="success"), ColoredButton(text="رجوع", callback_data="home", style="danger"))
+        bot.edit_message_text("جاري جلب الطلبات وتحديث حالتها من الموقع... ⏳", chat_id, mid)
         try:
-            # نسحب كل طلبات اليوزر بدون ما نرتبها من قاعدة البيانات
             res = supabase.table("orders").select("*").eq("user_id", chat_id).execute()
             if not res.data:
                 bot.edit_message_text("لا توجد طلبات سابقة بحسابك. ❌", chat_id, mid, reply_markup=markup)
                 return
             
-            # ترتيب الطلبات برمجياً (الأحدث أولاً) وتحديد آخر 5 فقط
             orders_list = res.data[::-1][:5]
-            
             msg = f"{E_CART} <b>أحدث طلباتك:</b>\n\n"
+            
             for o in orders_list:
-                msg += f"🔹 خدمة: {o.get('service_name', 'خدمة')}\n💵 المبلغ المخصوم: {o.get('price', 0)}$\n🔗 الرابط: {o.get('target_link', '-')}\n📌 الحالة: {o.get('status', 'مكتمل')}\n〰️〰️〰️〰️\n"
+                status = o.get('status', 'قيد المعالجة ⏳')
+                api_order_id = o.get('api_order_id')
+                
+                # فحص الحالة لايف من الموقع إذا ماكانت مكتملة او ملغية
+                if api_order_id and "مكتمل" not in status and "ملغي" not in status:
+                    chk_payload = {"key": API_KEY, "action": "status", "order": api_order_id}
+                    try:
+                        chk_req = requests.post(API_URL, json=chk_payload).json()
+                        if "status" in chk_req:
+                            new_status = chk_req["status"]
+                            if new_status == "Completed": status = "مكتمل ✅"
+                            elif new_status == "Processing": status = "قيد المعالجة ⏳"
+                            elif new_status == "Pending": status = "قيد الانتظار ⏱"
+                            elif new_status == "In progress": status = "جاري التنفيذ 🚀"
+                            elif new_status == "Partial": status = "مكتمل جزئياً ⚠️"
+                            elif new_status == "Canceled": status = "ملغي ❌"
+                            
+                            # تحديث الحالة الجديدة بقاعدة البيانات
+                            if status != o.get('status'):
+                                supabase.table("orders").update({"status": status}).eq("id", o["id"]).execute()
+                    except:
+                        pass
+                
+                msg += f"🔹 خدمة: {o.get('service_name', 'خدمة')}\n💵 المبلغ المخصوم: {o.get('price', 0)}$\n🔗 الرابط: {o.get('target_link', '-')}\n📌 الحالة: <b>{status}</b>\n〰️〰️〰️〰️\n"
+            
             bot.edit_message_text(msg, chat_id, mid, reply_markup=markup, parse_mode="HTML")
         except Exception as e:
             err_msg = f"لا توجد طلبات سابقة بحسابك. ❌"
             if chat_id == ADMIN_ID:
-                err_msg += f"\n\n(تنبيه للمطور: يوجد خطأ بجدول orders يرجى مراجعته:\n{e})"
+                err_msg += f"\n\n(تنبيه للمطور: يوجد خطأ بجدول orders تأكد من إضافة عمود api_order_id\n{e})"
             bot.edit_message_text(err_msg, chat_id, mid, reply_markup=markup)
 
     # 🚀 قسم طلب جديد (عرض الأقسام)
@@ -217,7 +240,7 @@ def callback_query(call):
         msg = bot.edit_message_text("أرسل أيدي (ID) المستخدم المراد شحنه:", chat_id, mid)
         bot.register_next_step_handler(msg, add_balance_step1)
 
-    # 📊 الإحصائيات (تم التعديل لتفادي خطأ عمود id)
+    # 📊 الإحصائيات
     elif data == "admin_stats" and chat_id == ADMIN_ID:
         u_res = supabase.table("users").select("*", count="exact").execute()
         o_res = supabase.table("orders").select("*", count="exact").execute()
@@ -296,6 +319,9 @@ def process_order_execute(message, service, target_link):
             bot.edit_message_text(f"❌ خطأ من الموقع: {req['error']}", chat_id, status_msg.message_id)
             return
             
+        # استخراج رقم الطلب من الموقع
+        api_order_id = req.get("order")
+        
         update_balance(chat_id, total_price, add=False)
         
         try:
@@ -304,10 +330,11 @@ def process_order_execute(message, service, target_link):
                 "service_name": service['name'],
                 "price": total_price,
                 "target_link": target_link,
-                "status": "مكتمل"
+                "status": "قيد المعالجة ⏳",
+                "api_order_id": api_order_id
             }).execute()
         except Exception as db_err:
-            bot.send_message(ADMIN_ID, f"⚠️ تنبيه للأدمن: صار خطأ بحفظ الطلب بجدول orders:\n{db_err}")
+            bot.send_message(ADMIN_ID, f"⚠️ تنبيه للأدمن: صار خطأ بحفظ الطلب بجدول orders (تأكد من إضافة عمود api_order_id):\n{db_err}")
         
         markup = InlineKeyboardMarkup().add(ColoredButton(text="القائمة الرئيسية", callback_data="home", style="primary"))
         success_msg = (
