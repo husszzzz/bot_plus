@@ -183,7 +183,7 @@ def callback_query(call):
         markup.add(ColoredButton(text="رجوع", callback_data="new_order", style="danger"))
         bot.edit_message_text(f"الخدمات المتاحة لقسم <b>{cat_name}</b>:\nاختر الخدمة المطلوبة:", chat_id, mid, reply_markup=markup, parse_mode="HTML")
 
-    # 💸 بدء الشراء
+    # 💸 بدء الشراء (محدث لطلب الكمية)
     elif data.startswith("buy_"):
         service_id = int(data.split("buy_")[1])
         res = supabase.table("services").select("*").eq("id", service_id).execute()
@@ -192,14 +192,10 @@ def callback_query(call):
             return
         
         service = res.data[0]
-        bal = get_balance(chat_id)
-        if bal < service['bot_price']:
-            markup = InlineKeyboardMarkup().add(ColoredButton(text="رجوع", callback_data="home", style="danger"))
-            bot.edit_message_text(f"❌ رصيدك غير كافٍ لإتمام الطلب!\n\nسعر الخدمة: <b>{service['bot_price']}$</b>\nرصيدك الحالي: <b>{bal}$</b>\n\nتواصل مع الدعم لشحن رصيدك.", chat_id, mid, reply_markup=markup, parse_mode="HTML")
-            return
+        # تم إزالة فحص الرصيد من هنا لأننا نحتاج نضرب السعر بالكمية أولاً
             
-        msg = bot.edit_message_text(f"الخدمة: <b>{service['name']}</b>\nالسعر: <b>{service['bot_price']}$</b>\n\nأرسل الآن الرابط المراد الرشق له:", chat_id, mid, parse_mode="HTML")
-        bot.register_next_step_handler(msg, process_order, service)
+        msg = bot.edit_message_text(f"الخدمة: <b>{service['name']}</b>\nالسعر لكل 1000: <b>{service['bot_price']}$</b>\n\nأرسل الآن الرابط المراد الرشق له:", chat_id, mid, parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_order_link, service)
 
     # ⚙️ لوحة الأدمن
     elif data == "admin_panel" and chat_id == ADMIN_ID:
@@ -245,14 +241,32 @@ def callback_query(call):
             bot.edit_message_text(f"✅ تمت إضافة الخدمة بنجاح لقسم <b>{cat_name}</b> بسعر {svc['bot_price']}$", chat_id, mid, reply_markup=markup, parse_mode="HTML")
             del temp_admin_data[chat_id]
 
-# --- دالة إتمام الطلب للزبون ---
-def process_order(message, service):
+
+# --- دوال عملية الشراء مع الكمية ---
+def process_order_link(message, service):
     chat_id = message.chat.id
     target_link = message.text.strip()
     
+    msg = bot.send_message(chat_id, "أرسل الآن الكمية المطلوبة (أرقام فقط، مثلاً: 1000 أو 5000):")
+    bot.register_next_step_handler(msg, process_order_execute, service, target_link)
+
+def process_order_execute(message, service, target_link):
+    chat_id = message.chat.id
+    try:
+        quantity = int(message.text.strip())
+        if quantity <= 0:
+            raise ValueError
+    except:
+        bot.send_message(chat_id, "❌ الكمية يجب أن تكون رقماً صحيحاً. الرجاء إعادة الطلب من جديد.")
+        return
+
+    # حساب السعر الإجمالي (الكمية على 1000 ضرب سعر البوت)
+    total_price = (quantity / 1000.0) * service['bot_price']
+    
     bal = get_balance(chat_id)
-    if bal < service['bot_price']:
-        bot.send_message(chat_id, "❌ فشل الطلب: رصيدك غير كافٍ.")
+    if bal < total_price:
+        markup = InlineKeyboardMarkup().add(ColoredButton(text="رجوع للرئيسية", callback_data="home", style="danger"))
+        bot.send_message(chat_id, f"❌ رصيدك غير كافٍ لإتمام الطلب!\n\nالسعر الإجمالي للكمية: <b>{total_price}$</b>\nرصيدك الحالي: <b>{bal}$</b>", reply_markup=markup, parse_mode="HTML")
         return
         
     status_msg = bot.send_message(chat_id, "جاري إرسال الطلب للموقع... ⏳")
@@ -262,27 +276,36 @@ def process_order(message, service):
         "action": "add",
         "service": service['api_service_id'],
         "link": target_link,
-        "quantity": 1000
+        "quantity": quantity
     }
+    
     try:
         req = requests.post(API_URL, json=payload).json()
         if "error" in req:
             bot.edit_message_text(f"❌ خطأ من الموقع: {req['error']}", chat_id, status_msg.message_id)
             return
             
-        update_balance(chat_id, service['bot_price'], add=False)
+        update_balance(chat_id, total_price, add=False)
         supabase.table("orders").insert({
             "user_id": chat_id,
             "service_name": service['name'],
-            "price": service['bot_price'],
+            "price": total_price,
             "target_link": target_link,
-            "status": "قيد التنفيذ"
+            "status": "مكتمل"
         }).execute()
         
         markup = InlineKeyboardMarkup().add(ColoredButton(text="القائمة الرئيسية", callback_data="home", style="primary"))
-        bot.edit_message_text(f"{E_CHECK} <b>تم استلام طلبك بنجاح!</b>\n\nتم خصم {service['bot_price']}$ من رصيدك.\nيمكنك متابعة الحالة من قسم 'طلباتي'.", chat_id, status_msg.message_id, reply_markup=markup, parse_mode="HTML")
+        success_msg = (
+            f"{E_CHECK} <b>تم استلام طلبك وتنفذ بنجاح!</b>\n\n"
+            f"🔹 الخدمة: {service['name']}\n"
+            f"📈 الكمية: {quantity}\n"
+            f"💵 السعر المخصوم: {total_price}$\n\n"
+            f"يمكنك متابعة الحالة من قسم 'طلباتي'."
+        )
+        bot.edit_message_text(success_msg, chat_id, status_msg.message_id, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         bot.edit_message_text(f"❌ حدث خطأ أثناء الاتصال: {e}", chat_id, status_msg.message_id)
+
 
 # --- دوال إضافة الأقسام والخدمات للأدمن ---
 def add_category_step(message):
